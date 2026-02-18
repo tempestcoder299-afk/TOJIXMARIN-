@@ -4,19 +4,20 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotComman
 from flask import Flask
 from threading import Thread
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 API_ID = 37197223
 API_HASH = "3a43ae287a696ee9a6a82fb79f605b75"
-BOT_TOKEN = "8351053283:AAH8y9PgQ7NPym7l-FKSJRlU8JVcNF3leXQ" # Naya Token Updated
+BOT_TOKEN = "8351053283:AAH8y9PgQ7NPym7l-FKSJRlU8JVcNF3leXQ" #
 DB_CHANNEL_ID = -1003336472608 
-ADMINS = [7426624114] 
+ADMINS = [7426624114] #
 
+# FSub Lists (Memory based - update via commands)
 FSUB_CHANNELS = [-1003641267601, -1003625900383]
 LINKS = ["https://t.me/+mr5SZGOlW0U4YmQ1", "https://t.me/+BsibgbLhN48xNDdl"]
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Raphael 5-Color System Live!"
+def home(): return "Raphael Pro System Online!"
 def run_flask(): app.run(host="0.0.0.0", port=8080)
 
 bot = Client("TempestBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -25,30 +26,45 @@ bot = Client("TempestBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 def encode(text): return base64.urlsafe_b64encode(str(text).encode('ascii')).decode('ascii').strip("=")
 def decode(b64): return base64.urlsafe_b64decode((b64 + '=' * (4 - len(b64) % 4)).encode('ascii')).decode('ascii')
 
-# --- 5-COLOR SYSTEM LOGIC ---
+# --- 10 MIN AUTO-DELETE TASK ---
+async def delete_after_delay(client, chat_id, message_id):
+    await asyncio.sleep(600) # 10 Minutes
+    try: await client.delete_messages(chat_id, message_id)
+    except: pass
+
+# --- SMART G-B-B-G-R PAINTER ---
 def get_colorful_markup(reply_markup):
     if not reply_markup: return None
     all_btns = []
     for row in reply_markup.inline_keyboard:
         for btn in row: all_btns.append(btn)
             
-    # Position based styling
-    styles = ["success", "primary", "primary", "warning", "danger"]
+    # Pattern: Green, Blue, Blue, Green, Red
+    styles = ["success", "primary", "primary", "success", "danger"]
     new_kb, temp_row = [], []
     
     for i, btn in enumerate(all_btns):
-        # 5 buttons ke liye predefined colors, baki sab default primary
         style = styles[i] if i < len(styles) else "primary"
         b_data = {"text": btn.text, "style": style}
         if btn.url: b_data["url"] = btn.url
         elif btn.callback_data: b_data["callback_data"] = btn.callback_data
         
         temp_row.append(b_data)
-        # 2 buttons per row grid setup
         if len(temp_row) == 2 or i == len(all_btns) - 1:
             new_kb.append(temp_row)
             temp_row = []
     return {"inline_keyboard": new_kb}
+
+# --- SMART FSUB CHECKER ---
+async def get_pending_channels(client, user_id):
+    pending = []
+    for i, ch_id in enumerate(FSUB_CHANNELS):
+        try:
+            await client.get_chat_member(ch_id, user_id)
+        except:
+            # User has not joined
+            pending.append(InlineKeyboardButton(f"Join Channel {i+1}", url=LINKS[i]))
+    return pending
 
 # --- HANDLERS ---
 
@@ -58,41 +74,86 @@ async def start(client, message):
     if len(message.command) > 1:
         data = message.command[1]
         
-        # Admin Bypass
+        # 1. Admin Bypass
         if user_id not in ADMINS:
-            for ch_id in FSUB_CHANNELS:
-                try: await client.get_chat_member(ch_id, user_id)
-                except:
-                    btns = [[InlineKeyboardButton("Join Channel", url=LINKS[0])],
-                           [InlineKeyboardButton("✅ Try Again", url=f"https://t.me/{(await client.get_me()).username}?start={data}")]]
-                    return await message.reply_text("👋 **Join Channels first!**", reply_markup=InlineKeyboardMarkup(btns))
+            # 2. Smart FSub Check
+            pending_btns = await get_pending_channels(client, user_id)
+            if pending_btns:
+                btns = [[btn] for btn in pending_btns]
+                btns.append([InlineKeyboardButton("✅ Try Again", url=f"https://t.me/{(await client.get_me()).username}?start={data}")])
+                return await message.reply_text("👋 **Join remaining channels to get the file!**", reply_markup=InlineKeyboardMarkup(btns))
         
         try:
             val = decode(data)
-            m_id = int(val)
-            msg = await client.get_messages(DB_CHANNEL_ID, m_id)
+            # Batch Link Support
+            if "BATCH-" in val:
+                _, s_id, e_id = val.split("-")
+                msg_ids = list(range(int(s_id), int(e_id) + 1))
+            else:
+                msg_ids = [int(val)]
+
+            for m_id in msg_ids:
+                msg = await client.get_messages(DB_CHANNEL_ID, m_id)
+                # 3. Apply Colors & Send via Direct API
+                payload = {
+                    "chat_id": message.chat.id, "from_chat_id": DB_CHANNEL_ID, "message_id": m_id,
+                    "reply_markup": json.dumps(get_colorful_markup(msg.reply_markup)) if msg.reply_markup else None
+                }
+                res = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage", json=payload).json()
+                
+                # 4. Auto-Delete Timer
+                if res.get("ok"):
+                    asyncio.create_task(delete_after_delay(client, message.chat.id, res["result"]["message_id"]))
             
-            payload = {
-                "chat_id": message.chat.id,
-                "from_chat_id": DB_CHANNEL_ID,
-                "message_id": m_id,
-                "reply_markup": json.dumps(get_colorful_markup(msg.reply_markup)) if msg.reply_markup else None
-            }
-            # Stability on Render via direct HTTP
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage", json=payload)
-            
-        except Exception as e:
-            print(f"Error: {e}")
+            await message.reply_text("✅ **Files sent! Auto-delete in 10 mins.**") #
+        except: pass
     else:
-        await message.reply_text("Raphael System Online, Rimiru! 5-Color Logic is active.")
+        await message.reply_text("Raphael Pro Online, Rimiru! Main poori tarah taiyaar hoon.")
+
+# --- ADMIN COMMANDS ---
+
+@bot.on_message(filters.command("batch") & filters.user(ADMINS))
+async def batch_cmd(client, message):
+    if len(message.command) < 3: return await message.reply_text("❌ Usage: `/batch [StartID] [EndID]`")
+    s, e = message.command[1], message.command[2]
+    link = f"https://t.me/{(await client.get_me()).username}?start={encode(f'BATCH-{s}-{e}')}"
+    await message.reply_text(f"📂 **Batch Link:**\n\n`{link}`")
+
+@bot.on_message(filters.command("addchnl") & filters.user(ADMINS))
+async def add_chnl(client, message):
+    try:
+        cid, link = int(message.command[1]), message.command[2]
+        FSUB_CHANNELS.append(cid); LINKS.append(link)
+        await message.reply_text(f"✅ Added: `{cid}`")
+    except: await message.reply_text("Usage: `/addchnl ID Link`")
+
+@bot.on_message(filters.command("vars") & filters.user(ADMINS))
+async def show_vars(client, message):
+    txt = "⚙️ **Vars:**\n\n"
+    for i in range(len(FSUB_CHANNELS)):
+        txt += f"{i+1}. `{FSUB_CHANNELS[i]}`\n"
+    await message.reply_text(txt)
 
 @bot.on_message(filters.private & filters.user(ADMINS))
 async def save(client, message):
     if message.text and message.text.startswith('/'): return
     sent = await message.copy(chat_id=DB_CHANNEL_ID)
+    # Displaying Message ID for Batching
     link = f"https://t.me/{(await client.get_me()).username}?start={encode(sent.id)}"
-    await message.reply_text(f"✅ **Saved! Bot will auto-style 5 buttons.**\n🔗 `{link}`", quote=True)
+    await message.reply_text(f"✅ **Saved!**\n🆔 **ID:** `{sent.id}`\n🔗 **Link:** `{link}`", quote=True)
+
+# --- STARTUP ---
+async def set_menu():
+    await bot.set_bot_commands([
+        BotCommand("start", "Check Status"),
+        BotCommand("batch", "Create Batch"),
+        BotCommand("addchnl", "Add FSub"),
+        BotCommand("vars", "Check Settings")
+    ])
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
-    bot.run()
+    bot.start()
+    bot.loop.run_until_complete(set_menu())
+    print("Raphael Pro is Ready, Rimiru!")
+    asyncio.get_event_loop().run_forever()
