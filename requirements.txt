@@ -1,4 +1,6 @@
-git+https://github.com/pyrogram/pyrogram.git@dev
+git+https://github.com/pyrogram/pyrogram.git
 tgcrypto
 flask
+requests
+
 
