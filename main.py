@@ -13,14 +13,12 @@ API_ID = 37197223
 API_HASH = "3a43ae287a696ee9a6a82fb79f605b75"
 BOT_TOKEN = "8351053283:AAH8y9PgQ7NPym7l-FKSJRlU8JVcNF3leXQ" 
 DB_CHANNEL_ID = -1003336472608 
-ADMINS = [7426624114] #
+ADMINS = [7426624114]
 
-# Auto-Button External Links
-CHANNEL_INDEX = "https://t.me/tempest_main"
-ANIME_INDEX = "https://t.me/+jyN7Ne_wEDExMGU1"
-ONGOING_ANIME = "https://t.me/+ANvaArXotyJiNDRl"
-
-# Force Subscription Lists
+# Global Variables
+FSUB_CHANNELS = []
+LINKS = []
+DATA_MSG_ID = 0 
 
 app = Flask(__name__)
 @app.route('/')
@@ -29,46 +27,47 @@ def run_flask(): app.run(host="0.0.0.0", port=8080)
 
 bot = Client("TempestBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# --- TG DB HELPERS ---
+async def sync_db():
+    global DATA_MSG_ID
+    data = {"channels": FSUB_CHANNELS, "links": LINKS}
+    content = f"#RAPHAEL_DB\n\n```json\n{json.dumps(data, indent=2)}\n```"
+    try:
+        if DATA_MSG_ID:
+            await bot.edit_message_text(DB_CHANNEL_ID, DATA_MSG_ID, content)
+        else:
+            sent = await bot.send_message(DB_CHANNEL_ID, content)
+            DATA_MSG_ID = sent.id
+    except Exception as e:
+        # Agar edit fail ho (msg delete ho gaya ho), toh naya bhejo
+        sent = await bot.send_message(DB_CHANNEL_ID, content)
+        DATA_MSG_ID = sent.id
+        print(f"DB Synced (New Message): {DATA_MSG_ID}")
+
 # --- UTILS ---
-def encode(text): 
-    return base64.urlsafe_b64encode(str(text).encode('ascii')).decode('ascii').strip("=")
+def encode(text): return base64.urlsafe_b64encode(str(text).encode('ascii')).decode('ascii').strip("=")
+def decode(b64): return base64.urlsafe_b64decode((b64 + '=' * (4 - len(b64) % 4)).encode('ascii')).decode('ascii')
 
-def decode(b64): 
-    return base64.urlsafe_b64decode((b64 + '=' * (4 - len(b64) % 4)).encode('ascii')).decode('ascii')
-
-# --- AUTO-DELETE TASK (10 MINUTES) ---
 async def delete_after_delay(client, chat_id, message_id):
-    await asyncio.sleep(600) #
-    try: 
-        await client.delete_messages(chat_id, message_id)
-    except: 
-        pass
+    await asyncio.sleep(600)
+    try: await client.delete_messages(chat_id, message_id)
+    except: pass
 
-# --- SMART PAINTER + 2+1 AUTO BUTTON LOGIC ---
 def get_colorful_markup(reply_markup):
-    # Case 1: Agar buttons nahi hain toh 2+1 layout add karo
     if not reply_markup:
         return {
             "inline_keyboard": [
-                [
-                    {"text": "ANIME INDEX", "url": ANIME_INDEX, "style": "success"}, # Green
-                    {"text": "CHANNEL INDEX", "url": CHANNEL_INDEX, "style": "primary"} # Blue
-                ],
-                [
-                    {"text": "ONGOING ANIME", "url": ONGOING_ANIME, "style": "danger"} # Red
-                ]
+                [{"text": "ANIME INDEX", "url": "https://t.me/tempest_main"}, {"text": "CHANNEL INDEX", "url": "https://t.me/+jyN7Ne_wEDExMGU1"}],
+                [{"text": "ONGOING ANIME", "url": "https://t.me/+ANvaArXotyJiNDRl"}]
             ]
         }
-    
-    # Case 2: Agar buttons hain toh G-B-B-G-R pattern apply karo
     new_kb = []
     btn_index = 0
     styles = ["success", "primary", "primary", "success", "danger"]
-    
     for row in reply_markup.inline_keyboard:
         new_row = []
         for btn in row:
-            style = styles[btn_index] if btn_index < len(styles) else "primary"
+            style = styles[btn_index % 5]
             b_data = {"text": btn.text, "style": style}
             if btn.url: b_data["url"] = btn.url
             elif btn.callback_data: b_data["callback_data"] = btn.callback_data
@@ -76,16 +75,6 @@ def get_colorful_markup(reply_markup):
             btn_index += 1
         new_kb.append(new_row)
     return {"inline_keyboard": new_kb}
-
-# --- SMART FSUB CHECKER ---
-async def get_pending_channels(client, user_id):
-    pending = []
-    for i, ch_id in enumerate(FSUB_CHANNELS):
-        try:
-            await client.get_chat_member(ch_id, user_id)
-        except:
-            pending.append(InlineKeyboardButton(f"Join Channel {i+1}", url=LINKS[i]))
-    return pending
 
 # --- HANDLERS ---
 
@@ -95,78 +84,70 @@ async def start(client, message):
     if len(message.command) > 1:
         data = message.command[1]
         
-        if user_id not in ADMINS:
-            # Check Force Subscription
-            pending_btns = await get_pending_channels(client, user_id)
-            if pending_btns:
-                btns = [[btn] for btn in pending_btns]
-                btns.append([InlineKeyboardButton("✅ Try Again", url=f"https://t.me/{(await client.get_me()).username}?start={data}")])
-                return await message.reply_text("👋 Join remaining channels first!", reply_markup=InlineKeyboardMarkup(btns))
+        pending = []
+        for i, ch_id in enumerate(FSUB_CHANNELS):
+            try:
+                await client.get_chat_member(ch_id, user_id)
+            except Exception:
+                pending.append([InlineKeyboardButton(f"Join Channel {i+1}", url=LINKS[i])])
         
+        if pending and user_id not in ADMINS:
+            pending.append([InlineKeyboardButton("✅ Try Again", url=f"https://t.me/{(await client.get_me()).username}?start={data}")])
+            return await message.reply_text("👋 Join remaining channels first!", reply_markup=InlineKeyboardMarkup(pending))
+
         try:
             val = decode(data)
             ids = list(range(int(val.split("-")[1]), int(val.split("-")[2]) + 1)) if "BATCH-" in val else [int(val)]
-
-                        # --- PERFECTLY ALIGNED CORE LOGIC ---
             for m_id in ids:
                 msg = await client.get_messages(DB_CHANNEL_ID, m_id)
-                
-                # Auto-Buttons aur 2+1 Layout apply ho raha hai
                 payload = {
-                    "chat_id": message.chat.id,
-                    "from_chat_id": DB_CHANNEL_ID,
-                    "message_id": m_id,
+                    "chat_id": message.chat.id, "from_chat_id": DB_CHANNEL_ID, "message_id": m_id,
                     "reply_markup": json.dumps(get_colorful_markup(msg.reply_markup))
                 }
-                
-                # API request to copy message
                 res = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage", json=payload).json()
-                
                 if res.get("ok"):
-                    # Auto-Delete Task correctly triggered
-                    sent_msg_id = res["result"]["message_id"]
-                    asyncio.create_task(delete_after_delay(client, message.chat.id, sent_msg_id))
-            
-            # Ye line 'for' loop ke bilkul barabar (bahar) honi chahiye
+                    asyncio.create_task(delete_after_delay(client, message.chat.id, res["result"]["message_id"]))
             await message.reply_text("✅ Files sent! Auto-delete in 10 mins.")
-
-        except Exception as e:
-            print(f"Error: {e}")
-
+        except Exception as e: print(f"Error: {e}")
     else:
-        await message.reply_text("Raphael Pro Online, Rimiru! Main poori tarah taiyaar hoon.")
+        await message.reply_text("Raphael Pro Online, Rimiru! Main taiyaar hoon.")
 
-@bot.on_message(filters.command(["add", "addchnl"]) & filters.user(ADMINS))
+@bot.on_message(filters.command("add") & filters.user(ADMINS))
 async def add_chnl(client, message):
     try:
-        FSUB_CHANNELS.append(int(message.command[1]))
-        LINKS.append(message.command[2])
-        await message.reply_text("✅ Channel Added!")
-    except: await message.reply_text("❌ Usage: `/add [ID] [Link]`")
+        new_id, new_link = int(message.command[1]), message.command[2]
+        if new_id in FSUB_CHANNELS: return await message.reply_text("❌ Pehle se added hai!")
+        FSUB_CHANNELS.append(new_id)
+        LINKS.append(new_link)
+        await sync_db()
+        await message.reply_text(f"✅ Synced with DB Channel!\nID: `{new_id}`")
+    except Exception: await message.reply_text("❌ Usage: `/add [ID] [Link]`")
 
-@bot.on_message(filters.command("vars") & filters.user(ADMINS))
-async def show_vars(client, message):
-    text = "⚙️ **Settings:**\n\n"
-    for i in range(len(FSUB_CHANNELS)):
-        text += f"{i+1}. `{FSUB_CHANNELS[i]}` | [Link]({LINKS[i]})\n"
-    await message.reply_text(text, disable_web_page_preview=True)
-@bot.on_message(filters.command(["remove", "delchnl"]) & filters.user(ADMINS))
+@bot.on_message(filters.command("remove") & filters.user(ADMINS))
 async def remove_fsub(client, message):
     try:
         idx = int(message.command[1]) - 1
-        rem_id = FSUB_CHANNELS.pop(idx)
+        FSUB_CHANNELS.pop(idx)
         LINKS.pop(idx)
-        await message.reply_text(f"🗑️ Removed position {idx+1}\nID: `{rem_id}`")
-    except:
-        await message.reply_text("❌ Usage: `/remove [Position]`")
+        await sync_db()
+        await message.reply_text("🗑️ Database Updated!")
+    except Exception: await message.reply_text("❌ Usage: `/remove [Index]`")
+
+@bot.on_message(filters.command("vars") & filters.user(ADMINS))
+async def show_vars(client, message):
+    if not FSUB_CHANNELS: return await message.reply_text("📭 FSub list khali hai.")
+    text = "⚙️ **Live FSub Config:**\n\n"
+    for i, (cid, lnk) in enumerate(zip(FSUB_CHANNELS, LINKS)):
+        text += f"{i+1}. `{cid}` | [Join]({lnk})\n"
+    await message.reply_text(text, disable_web_page_preview=True)
 
 @bot.on_message(filters.command("batch") & filters.user(ADMINS))
 async def batch_cmd(client, message):
-    if len(message.command) < 3:
-        return await message.reply_text("❌ Usage: `/batch [StartID] [EndID]`")
-    s, e = message.command[1], message.command[2]
-    link = f"https://t.me/{(await client.get_me()).username}?start={encode(f'BATCH-{s}-{e}')}"
-    await message.reply_text(f"📂 **Batch Link:**\n`{link}`")
+    try:
+        s, e = message.command[1], message.command[2]
+        link = f"https://t.me/{(await client.get_me()).username}?start={encode(f'BATCH-{s}-{e}')}"
+        await message.reply_text(f"📂 **Batch Link:**\n`{link}`")
+    except Exception: await message.reply_text("❌ `/batch [StartID] [EndID]`")
 
 @bot.on_message(filters.private & filters.user(ADMINS))
 async def save(client, message):
@@ -175,19 +156,39 @@ async def save(client, message):
     link = f"https://t.me/{(await client.get_me()).username}?start={encode(sent.id)}"
     await message.reply_text(f"✅ Saved! ID: `{sent.id}`\n🔗 `{link}`", quote=True)
 
-# --- STARTUP ---
-async def set_menu():
+# --- STARTUP SYNC (FIXED LOGIC) ---
+async def startup():
     await bot.set_bot_commands([
         BotCommand("start", "Check Status"),
         BotCommand("batch", "Create Batch"),
-        BotCommand("add", "Add FSub Channel"),
+        BotCommand("add", "Add FSub"),
         BotCommand("vars", "Check Settings"),
-        BotCommand("remove", "Remove FSub Channel")
+        BotCommand("remove", "Remove FSub")
     ])
+    
+    global DATA_MSG_ID, FSUB_CHANNELS, LINKS
+    print("Syncing Database from Telegram...")
+    
+    try:
+        # Peer ID resolve karne ke liye pehle chat fetch karo
+        await bot.get_chat(DB_CHANNEL_ID)
+        
+        async for msg in bot.search_messages(DB_CHANNEL_ID, query="#RAPHAEL_DB", limit=1):
+            try:
+                DATA_MSG_ID = msg.id
+                raw_data = msg.text.split("```json")[1].split("```")[0].strip()
+                db = json.loads(raw_data)
+                FSUB_CHANNELS = db.get("channels", [])
+                LINKS = db.get("links", [])
+                print(f"Successfully loaded {len(FSUB_CHANNELS)} channels.")
+            except Exception:
+                print("Found DB tag but format was wrong.")
+    except Exception as e:
+        print(f"Startup Sync Failed: {e}. Bot will create new DB on first /add.")
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.start()
-    bot.loop.run_until_complete(set_menu())
+    bot.loop.run_until_complete(startup())
     print("Raphael Pro Master System Ready!")
     asyncio.get_event_loop().run_forever()
