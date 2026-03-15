@@ -21,8 +21,6 @@ ANIME_INDEX = "https://t.me/+jyN7Ne_wEDExMGU1"
 ONGOING_ANIME = "https://t.me/+ANvaArXotyJiNDRl"
 
 # Force Subscription Lists
-FSUB_CHANNELS = [-1003641267601, -1003625900383]
-LINKS = ["https://t.me/+mr5SZGOlW0U4YmQ1", "https://t.me/+BsibgbLhN48xNDdl"]
 
 app = Flask(__name__)
 @app.route('/')
